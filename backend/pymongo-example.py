@@ -2,7 +2,10 @@
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from dotenv import load_dotenv
+from bson import json_util
 import os
+import json
+
 load_dotenv()
 
 db_username = os.getenv("MONGODB_USER")
@@ -23,7 +26,8 @@ try:
     # print(collection.find_one())
 
     #// Get order with order id 1001
-    order = collection.find_one({"order_id": "SC100056"})
-    print(order)
+    order = collection.find_one({"order_id": "SC10005"})
+    # Use bson.json_util to serialize ObjectId and other BSON types
+    print(json_util.dumps(order, indent=4))
 except Exception as e:
     print(e)

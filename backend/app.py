@@ -19,13 +19,72 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit.agents import function_tool, RunContext
 from livekit.plugins import sarvam
 from mem0 import AsyncMemoryClient
+from pydantic import BaseModel
+from typing import List, Optional
+from datetime import datetime
+
+# Create a Mongo DB client to perform search
+from pymongo.mongo_client import MongoClient
+from pymongo.server_api import ServerApi
+from dotenv import load_dotenv
+import os
+import json
+from bson import json_util
+
+load_dotenv()
+
+db_username = os.getenv("MONGODB_USER")
+db_password = os.getenv("MONGODB_PASS")
+uri = "mongodb+srv://"+db_username+":"+db_password+"@customer-support.bnkexoe.mongodb.net/?appName=customer-support"
+client = MongoClient(uri, server_api=ServerApi('1'))
+db = client.get_database("voice-agent-db")
+orders_collection = db.get_collection("orders")
+
 
 logger = logging.getLogger("agent")
 
 load_dotenv()
 
-RAG_USER_ID = "user-anuj-1"
+RAG_USER_ID = "user-anuj-2"
 mem0_client = AsyncMemoryClient()
+
+class OrderItem(BaseModel):
+    name: str
+    qty: int
+    price: float
+
+
+class DeliveryPartner(BaseModel):
+    name: str
+    phone: str
+
+class Order(BaseModel):
+    order_id: str
+    user_id: str
+    user_name: str
+    phone: str
+    city: str
+    items: List[OrderItem]
+
+    total_amount: float
+    payment_method: str
+    payment_status: str
+    order_status: str
+
+    delivery_eta_minutes: int
+
+    delivery_partner: Optional[DeliveryPartner] = None
+    delivery_address: str
+
+    created_at: datetime
+    delivered_at: Optional[datetime] = None
+
+    delay_reason: Optional[str] = None
+    cancel_reason: Optional[str] = None
+
+    is_subscription: bool
+    subscription_id: Optional[str] = None
+
 
 
 class Assistant(Agent):
@@ -113,65 +172,70 @@ class Assistant(Agent):
             Card and UPI refunds take three to five business days
             Subscription refunds are prorated
 
-            """,
+            """            
         )
 
     # To add tools, use the @function_tool decorator.
     # Here's an example that adds a simple weather tool.
     # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
+    @function_tool
+    async def lookup_order_details(self, context: RunContext, order_id: str):
+        """Use this tool to look up order details of a given order id.
     
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
+        If there is no order found with the given order id, the tool will indicate this. You must tell the user the order is not found.
     
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
+        Args:
+            order_id: The id of the order to look up
+        """
     
-    #     logger.info(f"Looking up weather for {location}")
-    
-    #     return "sunny with a temperature of 70 degrees."
+        logger.info(f"Looking up order for orderId : {order_id}")
+        
+        order = orders_collection.find_one({"order_id": order_id})
 
-    async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
-        # Persist the user message in Mem0
-        try:
-            logger.info(f"Adding user message to Mem0: {new_message.text_content}")
-            add_result = await mem0_client.add(
-                [{"role": "user", "content": new_message.text_content}],
-                user_id=RAG_USER_ID
-            )
-            logger.info(f"Mem0 add result (user): {add_result}")
-        except Exception as e:
-            logger.warning(f"Failed to store user message in Mem0: {e}")
+        if order:
+            return json_util.dumps(order, indent=4)
+        else:
+            return f"Order not found for orderId : {order_id}"
 
-        # RAG: Retrieve relevant context from Mem0 and inject as assistant message
-        try:
-            logger.info("About to await mem0_client.search for RAG context")
-            search_results = await mem0_client.search(
-                filters={"user_id": RAG_USER_ID},
-                query="What does the user like ?"                
-            )
-            logger.info(f"mem0_client.search returned: {search_results}")
-            if search_results and search_results.get('results', []):
-                context_parts = []
-                for result in search_results.get('results', []):
-                    paragraph = result.get("memory") or result.get("text")
-                    if paragraph:
-                        source = "mem0 Memories"
-                        if "from [" in paragraph:
-                            source = paragraph.split("from [")[1].split("]")[0]
-                            paragraph = paragraph.split("]")[1].strip()
-                        context_parts.append(f"Source: {source}\nContent: {paragraph}\n")
-                if context_parts:
-                    full_context = "\n\n".join(context_parts)
-                    logger.info(f"Injecting RAG context: {full_context}")
-                    turn_ctx.add_message(role="assistant", content=full_context)
-                    await self.update_chat_ctx(turn_ctx)
-        except Exception as e:
-            logger.warning(f"Failed to inject RAG context from Mem0: {e}")
+    # async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
+    #     # Persist the user message in Mem0
+    #     try:
+    #         logger.info(f"Adding user message to Mem0: {new_message.text_content}")
+    #         add_result = await mem0_client.add(
+    #             [{"role": "user", "content": new_message.text_content}],
+    #             user_id=RAG_USER_ID
+    #         )
+    #         logger.info(f"Mem0 add result (user): {add_result}")
+    #     except Exception as e:
+    #         logger.warning(f"Failed to store user message in Mem0: {e}")
 
-        await super().on_user_turn_completed(turn_ctx, new_message)
+    #     # RAG: Retrieve relevant context from Mem0 and inject as assistant message
+    #     try:
+    #         logger.info("About to await mem0_client.search for RAG context")
+    #         search_results = await mem0_client.search(
+    #             filters={"user_id": RAG_USER_ID},
+    #             query="What does the user like ?"                
+    #         )
+    #         logger.info(f"mem0_client.search returned: {search_results}")
+    #         if search_results and search_results.get('results', []):
+    #             context_parts = []
+    #             for result in search_results.get('results', []):
+    #                 paragraph = result.get("memory") or result.get("text")
+    #                 if paragraph:
+    #                     source = "mem0 Memories"
+    #                     if "from [" in paragraph:
+    #                         source = paragraph.split("from [")[1].split("]")[0]
+    #                         paragraph = paragraph.split("]")[1].strip()
+    #                     context_parts.append(f"Source: {source}\nContent: {paragraph}\n")
+    #             if context_parts:
+    #                 full_context = "\n\n".join(context_parts)
+    #                 logger.info(f"Injecting RAG context: {full_context}")
+    #                 turn_ctx.add_message(role="assistant", content=full_context)
+    #                 await self.update_chat_ctx(turn_ctx)
+    #     except Exception as e:
+    #         logger.warning(f"Failed to inject RAG context from Mem0: {e}")
+
+    #     await super().on_user_turn_completed(turn_ctx, new_message)
 
 
 server = AgentServer()
